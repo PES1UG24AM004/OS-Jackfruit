@@ -1,111 +1,57 @@
-# Multi-Container Runtime
+# Jackfruit OS: Custom Container Engine
 
-A lightweight Linux container runtime in C with a long-running supervisor and a kernel-space memory monitor.
+**Team Members:**
+* Aarav Yuval B G (SRN: PES1UG24AM004)
+* Anish Kumar (SRN: PES1UG24AM043)
 
-Read [`project-guide.md`](project-guide.md) for the full project specification.
-
----
-
-## Getting Started
-
-### 1. Fork the Repository
-
-1. Go to [github.com/shivangjhalani/OS-Jackfruit](https://github.com/shivangjhalani/OS-Jackfruit)
-2. Click **Fork** (top-right)
-3. Clone your fork:
-
-```bash
-git clone https://github.com/<your-username>/OS-Jackfruit.git
-cd OS-Jackfruit
-```
-
-### 2. Set Up Your VM
-
-You need an **Ubuntu 22.04 or 24.04** VM with **Secure Boot OFF**. WSL will not work.
-
-Install dependencies:
-
-```bash
-sudo apt update
-sudo apt install -y build-essential linux-headers-$(uname -r)
-```
-
-### 3. Run the Environment Check
-
-```bash
-cd boilerplate
-chmod +x environment-check.sh
-sudo ./environment-check.sh
-```
-
-Fix any issues reported before moving on.
-
-### 4. Prepare the Root Filesystem
-
-```bash
-mkdir rootfs-base
-wget https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz
-tar -xzf alpine-minirootfs-3.20.3-x86_64.tar.gz -C rootfs-base
-
-# Make one writable copy per container you plan to run
-cp -a ./rootfs-base ./rootfs-alpha
-cp -a ./rootfs-base ./rootfs-beta
-```
-
-Do not commit `rootfs-base/` or `rootfs-*` directories to your repository.
-
-### 5. Understand the Boilerplate
-
-The `boilerplate/` folder contains starter files:
-
-| File                   | Purpose                                             |
-| ---------------------- | --------------------------------------------------- |
-| `engine.c`             | User-space runtime and supervisor skeleton          |
-| `monitor.c`            | Kernel module skeleton                              |
-| `monitor_ioctl.h`      | Shared ioctl command definitions                    |
-| `Makefile`             | Build targets for both user-space and kernel module |
-| `cpu_hog.c`            | CPU-bound test workload                             |
-| `io_pulse.c`           | I/O-bound test workload                             |
-| `memory_hog.c`         | Memory-consuming test workload                      |
-| `environment-check.sh` | VM environment preflight check                      |
-
-Use these as your starting point. You are free to restructure the repository however you want — the submission requirements are listed in the project guide.
-
-### 6. Build and Verify
-
-```bash
-cd boilerplate
-make
-```
-
-If this compiles without errors, your environment is ready.
-
-### 7. GitHub Actions Smoke Check
-
-Your fork will inherit a minimal GitHub Actions workflow from this repository.
-
-That workflow only performs CI-safe checks:
-
-- `make -C boilerplate ci`
-- user-space binary compilation (`engine`, `memory_hog`, `cpu_hog`, `io_pulse`)
-- `./boilerplate/engine` with no arguments must print usage and exit with a non-zero status
-
-The CI-safe build command is:
-
-```bash
-make -C boilerplate ci
-```
-
-This smoke check does not test kernel-module loading, supervisor runtime behavior, or container execution.
+## Project Overview
+This project implements a lightweight container engine and runtime environment written in C. The architecture consists of a persistent supervisor daemon and a command-line interface, demonstrating core operating system concepts including process isolation, container lifecycle management, kernel-level memory thresholds, and CPU scheduling priorities.
 
 ---
 
-## What to Do Next
+## 1. The Supervisor Daemon
+The supervisor serves as the persistent backend manager for the container runtime. It binds to a UNIX domain socket (`/tmp/mini_runtime.sock`) to listen for incoming client commands. This daemon is responsible for the allocation, tracking, and teardown of isolated container environments, acting as the parent process for all generated containers.
 
-Read [`project-guide.md`](project-guide.md) end to end. It contains:
+![Supervisor Setup](1.jpeg)
+*Figure 1: Initialization of the supervisor daemon, successfully binding and listening on the designated socket.*
 
-- The six implementation tasks (multi-container runtime, CLI, logging, kernel monitor, scheduling experiments, cleanup)
-- The engineering analysis you must write
-- The exact submission requirements, including what your `README.md` must contain (screenshots, analysis, design decisions)
+---
 
-Your fork's `README.md` should be replaced with your own project documentation as described in the submission package section of the project guide. (As in get rid of all the above content and replace with your README.md)
+## 2. Container Lifecycle and Filesystem Isolation
+The engine manages a complete and robust container lifecycle. The system is capable of executing both persistent environments (running a shell) and temporary automated tasks (executing a single command and exiting cleanly). 
+
+Filesystem isolation is achieved by mounting containers to distinct root directories. By cloning the `rootfs-base` directory into a secondary `rootfs-beta` environment, we verify that independent containers operate within completely isolated filesystems without overlap.
+
+![Container Lifecycle](2.jpeg)
+*Figure 2: The process status output verifying active running containers, successfully exited temporary tasks, and the accurate state update of a forcefully terminated container (`c1`).*
+
+---
+
+## 3. Kernel-Level Memory Management
+To enforce resource restrictions, the project utilizes a custom kernel module (`container_monitor`). This module actively tracks the Resident Set Size (RSS) of running containers and enforces memory boundaries directly at the operating system level.
+
+* **Soft Limit (10 MiB):** Triggers a kernel-level warning logged via `dmesg` when the container's physical memory footprint exceeds the threshold.
+* **Hard Limit (20 MiB):** Acts as an Out-Of-Memory (OOM) threshold. If breached, the monitor intercepts the violation, sends an immediate termination signal to the container, and forcefully unregisters the process.
+
+![Memory Limits](3.jpeg)
+*Figure 3: System kernel logs demonstrating the `memtest` container triggering the 10 MiB soft limit warning, followed by an immediate termination upon breaching the 20 MiB hard limit.*
+
+---
+
+## 4. CPU Niceness and Scheduling Enforcement
+The engine accurately leverages Linux CPU scheduling priorities. To validate this, multiple infinite-loop background tasks (`yes > /dev/null &`) were instantiated to generate heavy, competing CPU loads. 
+
+Using the `renice` command, process priorities were dynamically modified. The operating system's scheduler successfully recognized the updated niceness values, granting priority processing time to the designated containers.
+
+![CPU Niceness Top View](4.jpeg)
+*Figure 4: Real-time system monitor output verifying successful priority allocation. Process 6788 operates with a `-10` niceness value, while process 6782 operates at `-5`.*
+
+---
+
+## 5. Process Cleanup and Zombie Prevention
+A critical requirement of a reliable container supervisor is the proper handling of process termination to prevent memory leaks. The daemon must accurately reap child processes after they exit organically or are forcefully terminated by the kernel monitor.
+
+Following comprehensive lifecycle and OOM termination testing, a system-wide search for orphaned or zombie processes was conducted to verify the supervisor's cleanup routines.
+
+![Zombie Process Check](6.jpeg)
+*Figure 5: Execution of `ps aux | grep defunct` returning only the search command itself. This validates that the engine successfully reaps all child processes, leaving zero zombie processes within the system.*
